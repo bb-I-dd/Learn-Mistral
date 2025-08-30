@@ -1,0 +1,436 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -576,
+        1248
+      ],
+      "id": "c5eb0d36-b173-4e00-993d-53b15a724f41",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "url": "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?count=100&scrIds=day_gainers",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -256,
+        1040
+      ],
+      "id": "b27238cc-8965-4f50-b5a0-a0f9a7438dba",
+      "name": "HTTP Request — Gainers",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "url": "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?count=100&scrIds=day_losers",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -256,
+        1248
+      ],
+      "id": "e391c07e-2963-4703-a1ad-cadcfcd55da7",
+      "name": "HTTP Request — Losers",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "url": "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?count=100&scrIds=most_actives",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -256,
+        1408
+      ],
+      "id": "1f9c1dc2-84a0-42c6-8dc8-a5703b986411",
+      "name": "HTTP Request — Actives",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        112,
+        1232
+      ],
+      "id": "20b76b8c-5a57-4989-88ec-583c7739c059",
+      "name": "Merge Sources"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robust flattener + dedupe + top-25 for Yahoo screener outputs (and mixed rows)\n\n// ---- config\nconst LIMIT = 5;\n\n// ---- helpers\nfunction normNum(v) {\n  if (typeof v === 'number' && isFinite(v)) return v;\n  if (v == null) return 0;\n  const n = parseFloat(String(v).replace('%','').trim());\n  return isFinite(n) ? n : 0;\n}\n\nfunction cleanSymbol(s) {\n  return (s || '').toString().trim().toUpperCase();\n}\n\nfunction isLikelyEquity(sym, quoteType) {\n  if (!sym) return false;\n  if (sym.startsWith('^')) return false;          // indexes (^GSPC)\n  if (sym.includes('=')) return false;            // FX pairs, etc.\n  if (quoteType && quoteType !== 'EQUITY') return false;\n  return true;\n}\n\n// Extract array of quote-like rows from any incoming item\nfunction extractRowsFromItem(it) {\n  const row = it?.json ?? it ?? {};\n  // Yahoo predefined screener shape:\n  // { finance: { result: [ { quotes: [...] } ] } }\n  const quotes = row.finance?.result?.[0]?.quotes;\n  if (Array.isArray(quotes) && quotes.length) {\n    return quotes.map(q => ({\n      symbol: q.symbol,\n      changePct: normNum(q.regularMarketChangePercent),\n      quoteType: q.quoteType\n    }));\n  }\n  // Already a flat row\n  return [{\n    symbol: row.symbol || row.ticker,\n    changePct: normNum(\n      row.changePct ??\n      row.regularMarketChangePercent ??\n      row.changesPercentage ??\n      row.percentchange\n    ),\n    quoteType: row.quoteType\n  }];\n}\n\n// ---- main\nconst bucket = [];\nfor (const it of items) {\n  const rows = extractRowsFromItem(it);\n  for (const r of rows) bucket.push(r);\n}\n\n// Deduplicate & filter\nconst seen = new Set();\nconst flat = [];\nfor (const r of bucket) {\n  const sym = cleanSymbol(r.symbol);\n  if (!isLikelyEquity(sym, r.quoteType)) continue;\n  if (seen.has(sym)) continue;\n  seen.add(sym);\n  flat.push({ symbol: sym, changePct: normNum(r.changePct) });\n}\n\n// Sort by absolute % move desc and take top N\nflat.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));\nconst top = flat.slice(0, LIMIT);\n\n// Output as one item per ticker\nreturn top.map(x => ({ json: { symbol: x.symbol, changePct: x.changePct } }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        288,
+        1248
+      ],
+      "id": "2a57f4fc-aea4-4577-a529-685c930811d3",
+      "name": "Code - Dedupe and Sorting"
+    },
+    {
+      "parameters": {
+        "url": "=https://query1.finance.yahoo.com/v8/finance/chart/{{ $json.symbol }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "interval",
+              "value": "5m"
+            },
+            {
+              "name": "range",
+              "value": "5d"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        624,
+        1040
+      ],
+      "id": "f12c05bb-999e-4941-a8f1-7dfd6caabfcc",
+      "name": "Yahoo Finance"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Function Item node — returns ONE plain object\n\nfunction round(x, d = 2) { return Number((x ?? 0).toFixed(d)); }\n\nfunction computeSeriesMetricsEnhanced(series) {\n  const cfg = { window: 50, H: 6, z1Thresh: 1.5, zHThresh: 1.8, pctThresh: 0.75, atrPeriod: 14, atrMult: 1.0, volSpikeMult: 1.8 };\n\n  const ts = Array.isArray(series.timestamp) ? series.timestamp.filter(Number.isFinite) : [];\n  const close = (Array.isArray(series.close) ? series.close : []).filter(Number.isFinite);\n  const high  = (Array.isArray(series.high)  ? series.high  : []).filter(Number.isFinite);\n  const low   = (Array.isArray(series.low)   ? series.low   : []).filter(Number.isFinite);\n  const vol   = (Array.isArray(series.volume)? series.volume: []).filter(x => Number.isFinite(x) && x >= 0);\n\n  const n = close.length;\n  const latestTs = ts.length ? new Date(ts[ts.length - 1] * 1000).toISOString() : new Date().toISOString();\n\n  if (n < 3) {\n    return { symbol: series.symbol ?? null, note: \"insufficient_bars\", volatilityFlag: false, timestamp: latestTs };\n  }\n\n  const last = close[n - 1], prev = close[n - 2];\n  const change = last - prev;\n  const changePct = prev ? (change / prev) * 100 : 0;\n\n  // 1-bar log-return z-score\n  const rets = [];\n  for (let i = 1; i < n; i++) if (close[i-1] > 0 && close[i] > 0) rets.push(Math.log(close[i] / close[i-1]));\n  const W = Math.min(cfg.window, rets.length);\n  const R1 = rets.slice(-W);\n  const mean1 = R1.reduce((a, b) => a + b, 0) / (R1.length || 1);\n  const std1  = Math.sqrt(R1.reduce((a, b) => a + (b - mean1) ** 2, 0) / Math.max(R1.length - 1, 1)) || 1e-9;\n  const z1 = (rets[rets.length - 1] - mean1) / std1;\n\n  // H-bar z-score (drift)\n  let zH = 0;\n  if (n > cfg.H) {\n    const retH = Math.log(close[n - 1] / close[n - 1 - cfg.H]);\n    const RH = [];\n    for (let i = cfg.H; i < n; i++) if (close[i-cfg.H] > 0 && close[i] > 0) RH.push(Math.log(close[i] / close[i-cfg.H]));\n    const WH = Math.min(cfg.window, RH.length);\n    const RHw = RH.slice(-WH);\n    const meanH = RHw.reduce((a,b)=>a+b,0) / (RHw.length || 1);\n    const stdH  = Math.sqrt(RHw.reduce((a,b)=>a+(b-meanH)**2,0) / Math.max(RHw.length-1,1)) || 1e-9;\n    zH = (retH - meanH) / stdH;\n  }\n\n  // ATR-based move (if highs/lows available)\n  let moveVsATR = 0;\n  if (high.length === n && low.length === n) {\n    const tr = [];\n    for (let i = 1; i < n; i++) {\n      const hl = high[i] - low[i];\n      const hc = Math.abs(high[i] - close[i - 1]);\n      const lc = Math.abs(low[i] - close[i - 1]);\n      tr.push(Math.max(hl, hc, lc));\n    }\n    const atr = tr.slice(-cfg.atrPeriod).reduce((a,b)=>a+b,0) / Math.max(cfg.atrPeriod, 1);\n    moveVsATR = atr ? Math.abs(change) / atr : 0;\n  }\n\n  // Volume spike (if volume)\n  let volSpike = false;\n  if (vol.length === n && n > 21) {\n    const avgVol = vol.slice(-21, -1).reduce((a,b)=>a+b,0) / 20;\n    volSpike = avgVol ? (vol[n - 1] > cfg.volSpikeMult * avgVol) : false;\n  }\n\n  const flag = Math.abs(z1) >= cfg.z1Thresh ||\n               Math.abs(zH) >= cfg.zHThresh ||\n               Math.abs(changePct) >= cfg.pctThresh ||\n               moveVsATR >= cfg.atrMult ||\n               volSpike;\n\n  return {\n    symbol: series.symbol ?? null,\n    price: round(last),\n    change: round(change),\n    changePercent: round(changePct),\n    z1: round(z1, 2),\n    zH: round(zH, 2),\n    moveVsATR: round(moveVsATR, 2),\n    volSpike,\n    volatilityFlag: !!flag,\n    timestamp: latestTs\n  };\n}\n\n// ---- detect current item shape and ALWAYS return ONE object ----\nconst j = $json;\n\ntry {\n  // A) /v8/finance/chart  (single symbol)\n  if (j?.chart?.result?.[0]) {\n    const r0 = j.chart.result[0];\n    const q  = r0.indicators?.quote?.[0] || {};\n    const series = {\n      symbol: r0.meta?.symbol ?? null,\n      timestamp: r0.timestamp || [],\n      close: q.close || [],\n      high: q.high || [],\n      low: q.low || [],\n      volume: q.volume || []\n    };\n    return computeSeriesMetricsEnhanced(series);\n  }\n\n  // B) spark single series: { symbol, timestamp[], close[] }\n  if (j?.symbol && Array.isArray(j?.close)) {\n    const series = { symbol: j.symbol, timestamp: j.timestamp || [], close: j.close || [], high: [], low: [], volume: [] };\n    return computeSeriesMetricsEnhanced(series);\n  }\n\n  // C) quote snapshot (first element only if multiple)\n  if (Array.isArray(j?.quoteResponse?.result) && j.quoteResponse.result.length) {\n    const r = j.quoteResponse.result[0];\n    const cp = r.regularMarketChangePercent ?? null;\n    return {\n      symbol: r.symbol ?? null,\n      price: r.regularMarketPrice ?? null,\n      changePercent: cp,\n      z1: null, zH: null, moveVsATR: null, volSpike: null,\n      volatilityFlag: Math.abs(cp ?? 0) >= 2.0,\n      timestamp: new Date().toISOString()\n    };\n  }\n\n  // D) fallback — unknown shape, but still return an object\n  return { symbol: j.symbol ?? null, note: \"unrecognized_shape\", volatilityFlag: false, timestamp: new Date().toISOString(), keys: Object.keys(j || {}) };\n\n} catch (e) {\n  // Never throw: always return an object\n  return { error: \"parse_failed\", message: e.message, volatilityFlag: false, timestamp: new Date().toISOString() };\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        1040
+      ],
+      "id": "3d0d0db7-95c6-435e-9422-866d4a3111c5",
+      "name": "Code - Only Cruicial Data"
+    },
+    {
+      "parameters": {
+        "url": "=https://news.google.com/rss/search?q={{$json.symbol}}%20stock%20when:2d&hl=en-US&gl=US&ceid=US:en",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "*/*"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        624,
+        1248
+      ],
+      "id": "59ec7851-3650-4457-a90c-28a10eff7be8",
+      "name": "Google News per each ticker"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "symbol",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1168,
+        1056
+      ],
+      "id": "dc68f821-500c-4fbe-8991-258ec29690ef",
+      "name": "Merge - News + Finances"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Align current items (with {data}) to symbols emitted by another node\n * named EXACTLY: Code - Dedupe and Sorting\n *\n * INPUT (this node):  [{json:{data:\"...\"}} , ...]\n * UPSTREAM node:      [{json:{symbol:\"ABCD\"}}, ...]\n * OUTPUT:             [{json:{symbol:\"ABCD\", data:\"...\"}} , ...]\n */\n\nconst SYMBOLS_NODE = 'Code - Dedupe and Sorting';  // <-- must match the node's label exactly\nconst CYCLE_IF_SHORT = false; // set true if you want to wrap symbols when data items > symbols\n\n// Grab ALL items from the symbols node (runIndex 0)\nconst symItems = $items(SYMBOLS_NODE, 0) || [];\nconst nSym = symItems.length;\n\nif (!nSym) {\n  throw new Error(`No items from node \"${SYMBOLS_NODE}\". \n- Check the node name (must match exactly, including spaces and case).\n- Ensure this node is executed BEFORE the current one (connect the flow).\n- Open Executions → select \"${SYMBOLS_NODE}\" → confirm it produced items.`);\n}\n\nconst out = [];\nfor (let i = 0; i < items.length; i++) {\n  // Choose which symbol item to use\n  let idx = i;\n  if (idx >= nSym) {\n    if (!CYCLE_IF_SHORT) break;            // stop if we don't want to cycle\n    idx = i % nSym;                         // or cycle\n  }\n  const sym = symItems[idx]?.json?.symbol ?? null;\n\n  // Accept either {data: \"...\"} or any json payload\n  const dataPayload = (items[i].json && 'data' in items[i].json)\n    ? items[i].json.data\n    : items[i].json;\n\n  out.push({\n    json: {\n      symbol: sym,\n      data: dataPayload\n    }\n  });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        1248
+      ],
+      "id": "705d9819-3934-4967-bf69-199af85a6e2f",
+      "name": "Attach Symbol"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * n8n Code (Function) node\n * INPUT items:  [{ json: { symbol: \"NVDA\", data: \"<rss>...</rss>\" } }, ...]\n * OUTPUT items: [{ json: { symbol: \"NVDA\", news: [\"title — snippet\", ...] } }, ...]\n */\n\nconst TOP_N = 5;        // max headlines per symbol\nconst SNIP = 240;       // snippet length\nconst REQUIRED_MATCH = false; // if true: keep only items that mention the ticker\n\nfunction stripHtml(s) {\n  return String(s || '')\n    .replace(/<!\\[CDATA\\[(.*?)\\]\\]>/gs, '$1')\n    .replace(/<[^>]*>/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction tickerRegex(sym) {\n  const esc = String(sym || '').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(^|[^A-Za-z0-9])(?:\\\\$|NASDAQ:|NYSE:|AMEX:)?\\\\s*${esc}(?=$|[^A-Za-z0-9])`, 'i');\n}\n\nfunction getXmlFromJson(j) {\n  if (typeof j === 'string') return j;\n  if (typeof j?.data === 'string') return j.data;\n  if (typeof j?.body === 'string') return j.body;\n  // try any first string field as last resort\n  for (const k of Object.keys(j || {})) {\n    if (typeof j[k] === 'string') return j[k];\n  }\n  return '';\n}\n\nfunction parseRss(xml, symbol) {\n  const reItem = /<item\\b[\\s\\S]*?<\\/item>/gi;\n  const blocks = Array.from(xml.matchAll(reItem)).map(m => m[0]);\n  if (!blocks.length) return [];\n\n  const reTitle = /<title>([\\s\\S]*?)<\\/title>/i;\n  const reDesc  = /<description>([\\s\\S]*?)<\\/description>/i;\n  const reTick  = tickerRegex(symbol);\n\n  const seen = new Set();\n  const out = [];\n\n  for (const block of blocks) {\n    const t = stripHtml((block.match(reTitle)?.[1]) || '');\n    const d = stripHtml((block.match(reDesc)?.[1]) || '');\n    if (!t) continue;\n\n    if (REQUIRED_MATCH && symbol && !reTick.test(`${t} ${d}`)) continue;\n\n    const key = t.toLowerCase();\n    if (seen.has(key)) continue;\n    seen.add(key);\n\n    out.push(d ? `${t} — ${d.slice(0, SNIP)}` : t);\n    if (out.length >= TOP_N) break;\n  }\n  return out;\n}\n\n// ---- process all incoming items\nconst out = [];\nfor (let i = 0; i < items.length; i++) {\n  const input = items[i].json || {};\n  const symbol = String(input.symbol || '').trim();\n  const xml = getXmlFromJson(input);\n  const news = xml ? parseRss(xml, symbol) : [];\n  out.push({ json: { symbol, news } });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        1248
+      ],
+      "id": "472e2427-439b-4740-b6e1-a5155bdca052",
+      "name": "Code - Parse RSS"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Mistral chat bodies: one output item per input ticker,\n// asking for a Telegram-ready MarkdownV2 message (no JSON).\n\nconst MAX_NEWS = 5;        // cap headlines\nconst MAX_LINE = 300;      // trim long lines\n\nfunction fmt(n, d = 2) {\n  if (n === null || n === undefined) return \"n/a\";\n  const v = Number(n);\n  return Number.isFinite(v) ? v.toFixed(d) : \"n/a\";\n}\n\nconst out = [];\n\nfor (const itWrap of items) {\n  const it = itWrap.json || {};\n\n  // news lines\n  const newsLines = Array.isArray(it.news) ? it.news : [];\n  const newsBlock = newsLines\n    .filter(Boolean)\n    .slice(0, MAX_NEWS)\n    .map(s => String(s).slice(0, MAX_LINE))\n    .map(s => `- ${s}`)\n    .join('\\n') || '— no notable news —';\n\n  // prompt: TASK first, then details, news last; use \"\"\" multiline\n  const userContent = `\"\"\"\nTask:\nProvide a concise stock recommendation for Telegram.\nOutput must be a single MarkdownV2 message, no JSON, no code blocks.\n\nFormat:\n*${it.symbol || 'SYM'}*\nScore: *X/10*\nRecommendation: *BUY/SELL/HOLD*\nProjection (1w): *N.NN%*\nRationale: <one sentence>\nUncertainty: <one sentence>\n\nDetails:\nSymbol: ${it.symbol || 'n/a'}\nTimestamp: ${it.timestamp || 'n/a'}\nLast price: ${fmt(it.price)}\nDay change: ${fmt(it.change)} (${fmt(it.changePercent)}%)\nRisk: z1=${fmt(it.z1)}, zH=${fmt(it.zH)}, moveVsATR=${fmt(it.moveVsATR)}, volSpike=${Boolean(it.volSpike)}, volatilityFlag=${Boolean(it.volatilityFlag)}\n\nNews (last 2 days):\n${newsBlock}\n\"\"\"`;\n\n  out.push({\n    json: {\n      model: \"mistral-small-latest\",\n      temperature: 0.3,\n      // IMPORTANT: no response_format here; we want plain text MarkdownV2\n      messages: [\n        {\n          role: \"system\",\n          content:\n            \"You are a financial analytics assistant. Return one concise Telegram-ready MarkdownV2 message only. Do not return JSON. Do not use code blocks. Properly escape MarkdownV2 special characters.\"\n        },\n        { role: \"user\", content: userContent }\n      ]\n    }\n  });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        1056
+      ],
+      "id": "e01755b3-6e01-4dc3-be66-7eb1e5c875f4",
+      "name": "Code - Build Mistral Prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "mistralCloudApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1536,
+        1056
+      ],
+      "id": "741d7ef1-af8a-4bc0-9878-a9384d0adf3e",
+      "name": "Mistral -  Build Insight",
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "KwMYHHHZoPC04MpG",
+          "name": "Mistral Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "-4896759067",
+        "text": "={{$json.choices[0].message.content}}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1744,
+        1056
+      ],
+      "id": "90ac343a-25d3-4b30-b651-cff7619913d1",
+      "name": "Send a text message",
+      "webhookId": "0ab9390b-afe2-4694-a7d1-590d03d5cf0f",
+      "credentials": {
+        "telegramApi": {
+          "id": "h7nAPaOmItmxp6ey",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Gainers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request — Losers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HTTP Request — Actives",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request — Actives": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "HTTP Request — Losers": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "HTTP Request — Gainers": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Sources": {
+      "main": [
+        [
+          {
+            "node": "Code - Dedupe and Sorting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Dedupe and Sorting": {
+      "main": [
+        [
+          {
+            "node": "Yahoo Finance",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Google News per each ticker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yahoo Finance": {
+      "main": [
+        [
+          {
+            "node": "Code - Only Cruicial Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google News per each ticker": {
+      "main": [
+        [
+          {
+            "node": "Attach Symbol",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Only Cruicial Data": {
+      "main": [
+        [
+          {
+            "node": "Merge - News + Finances",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Symbol": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse RSS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse RSS": {
+      "main": [
+        [
+          {
+            "node": "Merge - News + Finances",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge - News + Finances": {
+      "main": [
+        [
+          {
+            "node": "Code - Build Mistral Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Build Mistral Prompt": {
+      "main": [
+        [
+          {
+            "node": "Mistral -  Build Insight",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mistral -  Build Insight": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ed76916d-afc8-441c-8faa-ce137fdc6c29",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "aeceaf44ddd2eb1dcf08060179ca0e24a272e8d8dd9fe9b82e75286024f2fd01"
+  },
+  "id": "Q9cOBQJpR2y2o7us",
+  "tags": []
+}
