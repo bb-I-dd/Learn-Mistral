@@ -92,7 +92,7 @@ By the end of this book, you will be ready to design and build AI systems that a
 </details>
 
 <details>
-  <summary><h2>Get to know Authors</h2></summary>
+  <summary><h2>Get to know Author</h2></summary>
 
 _Pavlo Cherkashin_ Pavel Cherkashin is a seasoned software craftsmanship expert with a focus on artificial intelligence and machine learning. He currently works as a consultant, helping organizations design and implement innovative AI solutions. Pavel's journey into AI began with a deep fascination for neural networks, and he has since dedicated his career to mastering and applying AI technologies. Along the way, he has contributed to major technology initiatives at companies such as Nike and Oracle. Pavel is also passionate about teaching, conducting workshops and training sessions to help professionals and enthusiasts understand and implement AI technologies effectively.
 
